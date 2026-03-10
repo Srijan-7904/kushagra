@@ -59,12 +59,25 @@ const app = express();
 const server = http.createServer(app);
 
 // CORS Configuration
+const allowedOrigins = [
+  FRONTEND_URL,
+  'http://localhost:5173',
+  'http://localhost:3000'
+];
 app.use(cors({
-  origin: true,
+  origin: function (origin, callback) {
+    // allow requests with no origin (mobile apps, curl, etc.)
+    if (!origin) return callback(null, true);
+    if (allowedOrigins.includes(origin)) return callback(null, true);
+    // allow all onrender.com subdomains
+    if (origin.endsWith('.onrender.com')) return callback(null, true);
+    callback(null, true); // allow all during development
+  },
   credentials: true,
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'],
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization']
 }));
+app.options('*', cors());
 
 // Body parser middleware
 app.use(express.json());
@@ -587,10 +600,12 @@ app.post('/api/analyze-audio', authenticateToken, upload.single('audio'), async 
 
 // Health check
 app.get('/api/health', (req, res) => {
+  const dbState = ['disconnected', 'connected', 'connecting', 'disconnecting'];
   res.json({ 
     success: true,
     message: 'Server is running',
     environment: NODE_ENV,
+    database: dbState[mongoose.connection.readyState] || 'unknown',
     groq: !!GROQ_API_KEY,
     googleAuth: !!(GOOGLE_CLIENT_ID && GOOGLE_CLIENT_SECRET),
     timestamp: new Date().toISOString()
