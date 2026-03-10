@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { Loader2, AlertCircle } from 'lucide-react';
 
-const BACKEND_URL = window.location.port === '5173' ? "http://localhost:3000" : window.location.origin;
+const BACKEND_URL = import.meta.env.VITE_API_URL || (window.location.port === '5173' ? "http://localhost:3000" : window.location.origin);
 
 export default function OAuthCallbackHandler() {
   const navigate = useNavigate();

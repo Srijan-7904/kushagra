@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { Lock, User, Mail, Loader2, AlertCircle } from "lucide-react";
 import { FcGoogle } from "react-icons/fc";
 
-const BACKEND_URL = window.location.port === '5173' ? "http://localhost:3000" : window.location.origin;
+const BACKEND_URL = import.meta.env.VITE_API_URL || (window.location.port === '5173' ? "http://localhost:3000" : window.location.origin);
 
 export default function Signup() {
   const [name, setName] = useState('');
@@ -42,7 +42,8 @@ export default function Signup() {
         body: JSON.stringify({ name, email, password })
       });
 
-      const data = await response.json();
+      let data = {};
+      try { data = await response.json(); } catch { /* empty response */ }
 
       if (response.ok && data.success) {
         localStorage.setItem('token', data.token);

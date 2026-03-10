@@ -11,7 +11,7 @@ import {
   ResponsiveContainer, Legend, Tooltip, CartesianGrid
 } from "recharts";
 
-const NODE_BACKEND_URL = window.location.port === '5173' ? "http://localhost:3000" : window.location.origin;
+const NODE_BACKEND_URL = import.meta.env.VITE_API_URL || (window.location.port === '5173' ? "http://localhost:3000" : window.location.origin);
 const PYTHON_BACKEND_URL = window.location.port === '5173' ? "http://localhost:5000" : (window.location.origin.replace(':3000', ':5000'));
 
 // Initial expense categories

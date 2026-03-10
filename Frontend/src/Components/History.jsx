@@ -152,7 +152,7 @@ import {
 // CONFIGURATION
 // ============================================
 
-const BACKEND_URL = window.location.port === '5173' ? "http://localhost:3000" : window.location.origin;
+const BACKEND_URL = import.meta.env.VITE_API_URL || (window.location.port === '5173' ? "http://localhost:3000" : window.location.origin);
 
 const getAuthHeaders = () => {
   const token = localStorage.getItem('token');

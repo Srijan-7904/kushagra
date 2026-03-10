@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { Mail, Lock, Loader2, AlertCircle } from 'lucide-react';
 
-const BACKEND_URL = window.location.port === '5173' ? "http://localhost:3000" : window.location.origin;
+const BACKEND_URL = import.meta.env.VITE_API_URL || (window.location.port === '5173' ? "http://localhost:3000" : window.location.origin);
 
 export default function Login() {
   const navigate = useNavigate();
@@ -37,7 +37,8 @@ export default function Login() {
         body: JSON.stringify({ email, password })
       });
 
-      const data = await response.json();
+      let data = {};
+      try { data = await response.json(); } catch { /* empty response */ }
 
       if (response.ok && data.success) {
         localStorage.setItem('token', data.token);
