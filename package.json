@@ -1,0 +1,13 @@
+{
+  "name": "expense-tracker-root",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "install:frontend": "cd Frontend && npm install",
+    "install:backend": "cd backend && npm install",
+    "build:frontend": "cd Frontend && npm run build",
+    "copy:frontend": "xcopy /E /I /Y \"Frontend\\dist\" \"backend\\dist\" || cp -r Frontend/dist backend/dist",
+    "setup": "npm run install:frontend && npm run install:backend && npm run build:frontend && npm run copy:frontend",
+    "start": "cd backend && node server.js"
+  }
+}

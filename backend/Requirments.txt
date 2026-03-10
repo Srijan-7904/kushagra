@@ -1,0 +1,41 @@
+# Python Backend Requirements for AI Expense Tracker
+# Install with: pip install -r requirements.txt
+
+# Core Flask
+flask==3.0.0
+flask-cors==4.0.0
+
+# HTTP Requests
+requests==2.31.0
+
+# Audio Processing
+pydub==0.25.1
+SpeechRecognition==3.10.0
+
+# Image Processing
+Pillow==10.1.0
+
+# OCR Engines
+pytesseract==0.3.10
+easyocr==1.7.0
+
+# PDF Processing
+PyPDF2==3.0.1
+pdf2image==1.16.3
+
+# Additional dependencies for PDF processing
+# Note: You'll also need to install poppler separately:
+# - Ubuntu/Debian: sudo apt-get install poppler-utils
+# - macOS: brew install poppler
+# - Windows: Download from https://github.com/oschwartz10612/poppler-windows/releases
+
+# Additional dependencies for Tesseract OCR
+# Note: You'll also need to install tesseract-ocr:
+# - Ubuntu/Debian: sudo apt-get install tesseract-ocr
+# - macOS: brew install tesseract
+# - Windows: Download installer from https://github.com/UB-Mannheim/tesseract/wiki
+
+# Optional: For better Hindi OCR support
+# Download Hindi language data for Tesseract:
+# sudo apt-get install tesseract-ocr-hin  # Ubuntu/Debian
+# Or download from: https://github.com/tesseract-ocr/tessdata

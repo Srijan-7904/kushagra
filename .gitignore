@@ -1,0 +1,22 @@
+
+
+# dependencies
+node_modules/
+
+# environment variables
+.env
+
+# uploads / user files
+uploads/
+
+# logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# OS files
+.DS_Store
+
+# build
+dist/
+build/

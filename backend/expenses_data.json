@@ -1,0 +1,36 @@
+{
+  "expenses": [
+    {
+      "category": "Utility Bills",
+      "amount": 0,
+      "color": "#FF6B6B"
+    },
+    {
+      "category": "Shopping",
+      "amount": 0,
+      "color": "#4ECDC4"
+    },
+    {
+      "category": "Food",
+      "amount": 0,
+      "color": "#45B7D1"
+    },
+    {
+      "category": "Transport",
+      "amount": 0,
+      "color": "#FFA07A"
+    },
+    {
+      "category": "Entertainment",
+      "amount": 0,
+      "color": "#98D8C8"
+    },
+    {
+      "category": "Others",
+      "amount": 0,
+      "color": "#F7DC6F"
+    }
+  ],
+  "total_budget": 0,
+  "last_updated": null
+}

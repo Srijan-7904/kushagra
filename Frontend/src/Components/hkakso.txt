@@ -1,0 +1,894 @@
+import { useState, useRef, useEffect } from "react";
+import { useNavigate } from "react-router-dom";
+import { 
+  Mic, Send, Loader2, Upload, TrendingUp, 
+  TrendingDown, Check, X, History, LogOut, User, Brain
+} from "lucide-react";
+import {
+  PieChart, Pie, Cell,
+  BarChart, Bar, XAxis, YAxis,
+  LineChart, Line,
+  AreaChart, Area,
+  RadarChart, Radar, PolarGrid, PolarAngleAxis, PolarRadiusAxis,
+  ComposedChart,
+  ResponsiveContainer, Legend, Tooltip, CartesianGrid
+} from "recharts";
+
+// CONFIGURATION
+const BACKEND_URL = "http://localhost:3000";
+const WS_URL = "ws://localhost:3000/ws/audio";
+
+// UTILITY FUNCTIONS
+const getAuthHeaders = () => {
+  const token = localStorage.getItem('token');
+  return {
+    'Content-Type': 'application/json',
+    'Authorization': `Bearer ${token}`
+  };
+};
+
+const formatCurrency = (amount) => {
+  return `₹${amount.toLocaleString('en-IN')}`;
+};
+
+const formatDate = (date) => {
+  return new Date(date).toLocaleDateString('en-IN', {
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric'
+  });
+};
+
+// ============================================
+// WEBSOCKET AUDIO RECORDER
+// ============================================
+
+class WebSocketAudioRecorder {
+  constructor(onTranscript, onError) {
+    this.ws = null;
+    this.mediaRecorder = null;
+    this.audioContext = null;
+    this.onTranscript = onTranscript;
+    this.onError = onError;
+    this.isRecording = false;
+  }
+
+  async start(token) {
+    try {
+      // Get microphone access
+      const stream = await navigator.mediaDevices.getUserMedia({ 
+        audio: {
+          channelCount: 1,
+          sampleRate: 16000,
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true
+        } 
+      });
+
+      // Connect WebSocket
+      this.ws = new WebSocket(WS_URL);
+      
+      await new Promise((resolve, reject) => {
+        this.ws.onopen = () => {
+          // Authenticate
+          this.ws.send(JSON.stringify({ type: 'auth', token }));
+          resolve();
+        };
+        this.ws.onerror = reject;
+      });
+
+      // Setup audio processing
+      this.audioContext = new AudioContext({ sampleRate: 16000 });
+      const source = this.audioContext.createMediaStreamSource(stream);
+      
+      // Use ScriptProcessorNode for real-time audio chunks
+      const processor = this.audioContext.createScriptProcessor(4096, 1, 1);
+      
+      processor.onaudioprocess = (e) => {
+        if (!this.isRecording) return;
+        
+        const inputData = e.inputBuffer.getChannelData(0);
+        
+        // Convert Float32Array to Int16Array (PCM)
+        const pcmData = new Int16Array(inputData.length);
+        for (let i = 0; i < inputData.length; i++) {
+          const s = Math.max(-1, Math.min(1, inputData[i]));
+          pcmData[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+        }
+        
+        // Send to WebSocket
+        if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+          this.ws.send(pcmData.buffer);
+        }
+      };
+      
+      source.connect(processor);
+      processor.connect(this.audioContext.destination);
+
+      // Handle WebSocket messages
+      this.ws.onmessage = (event) => {
+        const data = JSON.parse(event.data);
+        
+        if (data.type === 'auth_success') {
+          console.log('✅ WebSocket authenticated');
+        } else if (data.type === 'transcription_complete') {
+          console.log('📝 Transcript:', data.transcript);
+          this.onTranscript(data.transcript, data.result);
+        } else if (data.type === 'error') {
+          console.error('❌ WebSocket error:', data.message);
+          this.onError(data.message);
+        }
+      };
+
+      this.mediaRecorder = { stream, processor, source };
+      this.isRecording = true;
+      
+      return true;
+    } catch (err) {
+      console.error('Failed to start recording:', err);
+      this.onError(err.message);
+      return false;
+    }
+  }
+
+  stop() {
+    this.isRecording = false;
+    
+    if (this.mediaRecorder) {
+      this.mediaRecorder.stream.getTracks().forEach(track => track.stop());
+      this.mediaRecorder.processor.disconnect();
+      this.mediaRecorder.source.disconnect();
+    }
+    
+    if (this.audioContext) {
+      this.audioContext.close();
+    }
+    
+    if (this.ws) {
+      this.ws.close();
+    }
+  }
+}
+
+// ============================================
+// MAIN COMPONENT
+// ============================================
+
+export default function Home() {
+  const navigate = useNavigate();
+  
+  // State
+  const [inputValue, setInputValue] = useState("");
+  const [isRecording, setIsRecording] = useState(false);
+  const [isProcessing, setIsProcessing] = useState(false);
+  const [activeChart, setActiveChart] = useState("bar");
+  const [currentUser, setCurrentUser] = useState(null);
+  const [totalBudgetInput, setTotalBudgetInput] = useState(0);
+  const [expenses, setExpenses] = useState([
+    { category: "Utility Bills", amount: 0, color: "#FF6B6B", budget: 0 },
+    { category: "Shopping", amount: 0, color: "#4ECDC4", budget: 0 },
+    { category: "Food", amount: 0, color: "#45B7D1", budget: 0 },
+    { category: "Transport", amount: 0, color: "#FFA07A", budget: 0 },
+    { category: "Entertainment", amount: 0, color: "#98D8C4", budget: 0 },
+    { category: "Others", amount: 0, color: "#F7DC6F", budget: 0 },
+  ]);
+  const [pendingExpense, setPendingExpense] = useState(null);
+  const [showConfirmation, setShowConfirmation] = useState(false);
+  const [showHistory, setShowHistory] = useState(false);
+  const [expenseHistory, setExpenseHistory] = useState([]);
+  const [notification, setNotification] = useState(null);
+  
+  // Refs
+  const audioRecorderRef = useRef(null);
+  const fileInputRef = useRef(null);
+
+  // Effects
+  useEffect(() => {
+    loadCurrentUser();
+    loadBudget();
+    loadTodaysSummary();
+  }, []);
+
+  useEffect(() => {
+    if (totalBudgetInput > 0) {
+      saveBudget(totalBudgetInput);
+    }
+  }, [totalBudgetInput]);
+
+  // User management
+  const loadCurrentUser = () => {
+    try {
+      const user = localStorage.getItem('user');
+      if (user) {
+        setCurrentUser(JSON.parse(user));
+      } else {
+        navigate('/login');
+      }
+    } catch (error) {
+      console.error('Failed to load user:', error);
+      navigate('/login');
+    }
+  };
+
+  const handleLogout = () => {
+    localStorage.removeItem('token');
+    localStorage.removeItem('user');
+    navigate('/login');
+  };
+
+  // Budget management
+  const loadBudget = async () => {
+    try {
+      const response = await fetch(`${BACKEND_URL}/api/budget/current`, {
+        headers: getAuthHeaders()
+      });
+      
+      if (!response.ok) throw new Error('Failed to fetch budget');
+      
+      const data = await response.json();
+      
+      if (data.success && data.budget) {
+        setTotalBudgetInput(data.budget.totalBudget);
+        setExpenses(prev => prev.map(e => ({
+          ...e,
+          budget: data.budget.categoryBudgets[e.category] || 0
+        })));
+      }
+    } catch (error) {
+      console.error('Failed to load budget:', error);
+    }
+  };
+
+  const saveBudget = async (newBudget) => {
+    try {
+      const perCategory = Math.floor(newBudget / expenses.length);
+      const categoryBudgets = {};
+      
+      expenses.forEach(e => {
+        categoryBudgets[e.category] = perCategory;
+      });
+
+      const response = await fetch(`${BACKEND_URL}/api/budget/update`, {
+        method: 'POST',
+        headers: getAuthHeaders(),
+        body: JSON.stringify({ totalBudget: newBudget, categoryBudgets })
+      });
+
+      if (!response.ok) throw new Error('Failed to save budget');
+
+      setExpenses(prev => prev.map(e => ({ ...e, budget: perCategory })));
+    } catch (error) {
+      console.error('Failed to save budget:', error);
+      showNotification('Failed to save budget', 'error');
+    }
+  };
+
+  // Expense loading
+  const loadTodaysSummary = async () => {
+    try {
+      const response = await fetch(`${BACKEND_URL}/api/expenses/daily-summary`, {
+        headers: getAuthHeaders()
+      });
+      
+      if (!response.ok) throw new Error('Failed to fetch summary');
+      
+      const data = await response.json();
+      
+      if (data.success && data.summary.byCategory) {
+        setExpenses(prev => prev.map(e => ({
+          ...e,
+          amount: data.summary.byCategory[e.category]?.amount || 0
+        })));
+      }
+    } catch (error) {
+      console.error('Failed to load summary:', error);
+    }
+  };
+
+  const loadHistory = async () => {
+    try {
+      const response = await fetch(`${BACKEND_URL}/api/expenses/history`, {
+        headers: getAuthHeaders()
+      });
+      
+      if (!response.ok) throw new Error('Failed to fetch history');
+      
+      const data = await response.json();
+      
+      if (data.success) {
+        setExpenseHistory(data.expenses || []);
+        setShowHistory(true);
+      }
+    } catch (error) {
+      console.error('Failed to load history:', error);
+      showNotification('Failed to load expense history', 'error');
+    }
+  };
+
+  // Notification
+  const showNotification = (message, type = 'success') => {
+    setNotification({ message, type });
+    setTimeout(() => setNotification(null), 4000);
+  };
+
+  // Text input handling
+  const handleSubmit = async () => {
+    if (!inputValue.trim()) {
+      showNotification('Please enter an expense', 'error');
+      return;
+    }
+
+    setIsProcessing(true);
+    
+    try {
+      const response = await fetch(`${BACKEND_URL}/api/categorize`, {
+        method: 'POST',
+        headers: getAuthHeaders(),
+        body: JSON.stringify({ text: inputValue })
+      });
+
+      if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+
+      const data = await response.json();
+      
+      if (data.success && data.expense) {
+        setPendingExpense({ ...data.expense, source: 'text', metadata: data.metadata });
+        setShowConfirmation(true);
+        
+        // Show metadata in notification
+        if (data.metadata.source === 'user_learning') {
+          showNotification('✨ Auto-categorized from your history!', 'info');
+        } else if (data.metadata.source === 'fuzzy_match') {
+          showNotification(`💡 Matched with ${Math.round(data.metadata.confidence * 100)}% confidence`, 'info');
+        }
+      } else {
+        showNotification(data.message || 'Failed to categorize expense', 'error');
+      }
+    } catch (error) {
+      console.error('Backend error:', error);
+      showNotification(`Failed to connect to server: ${error.message}`, 'error');
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
+  const handleKeyPress = (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      handleSubmit();
+    }
+  };
+
+  // Expense confirmation
+  const confirmExpense = async () => {
+    if (!pendingExpense) return;
+
+    try {
+      const response = await fetch(`${BACKEND_URL}/api/expenses/confirm`, {
+        method: 'POST',
+        headers: getAuthHeaders(),
+        body: JSON.stringify(pendingExpense)
+      });
+
+      if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+
+      const data = await response.json();
+      
+      if (data.success) {
+        setExpenses(prev => prev.map(e => 
+          e.category === pendingExpense.category
+            ? { ...e, amount: e.amount + pendingExpense.amount }
+            : e
+        ));
+        
+        setInputValue("");
+        setShowConfirmation(false);
+        setPendingExpense(null);
+        
+        showNotification(
+          `✅ Saved ${formatCurrency(pendingExpense.amount)} to ${pendingExpense.category}!`,
+          'success'
+        );
+      } else {
+        throw new Error(data.message || 'Failed to save expense');
+      }
+    } catch (error) {
+      console.error('Failed to save:', error);
+      showNotification(`Failed to save expense: ${error.message}`, 'error');
+    }
+  };
+
+  const rejectExpense = () => {
+    setShowConfirmation(false);
+    setPendingExpense(null);
+    showNotification('Expense cancelled', 'info');
+  };
+
+  // Audio recording with WebSocket
+  const startRecording = async () => {
+    try {
+      const token = localStorage.getItem('token');
+      
+      audioRecorderRef.current = new WebSocketAudioRecorder(
+        (transcript, result) => {
+          // Handle transcription result
+          setInputValue(transcript);
+          
+          if (result && result.amount) {
+            setPendingExpense({
+              title: transcript,
+              amount: result.amount,
+              category: result.category,
+              description: transcript,
+              source: 'audio',
+              metadata: {
+                source: result.source,
+                confidence: result.confidence
+              }
+            });
+            setShowConfirmation(true);
+          }
+          
+          setIsRecording(false);
+          setIsProcessing(false);
+        },
+        (error) => {
+          showNotification(`Recording error: ${error}`, 'error');
+          setIsRecording(false);
+          setIsProcessing(false);
+        }
+      );
+
+      const started = await audioRecorderRef.current.start(token);
+      
+      if (started) {
+        setIsRecording(true);
+        showNotification('🎤 Recording... Speak naturally', 'info');
+      }
+    } catch (error) {
+      console.error('Microphone error:', error);
+      showNotification('Microphone access denied', 'error');
+    }
+  };
+
+  const stopRecording = () => {
+    if (audioRecorderRef.current) {
+      audioRecorderRef.current.stop();
+      setIsRecording(false);
+      setIsProcessing(true);
+      showNotification('⏳ Processing audio...', 'info');
+    }
+  };
+
+  // File upload
+  const handleFileUpload = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    if (file.size > 10 * 1024 * 1024) {
+      showNotification('File too large. Maximum size is 10MB', 'error');
+      return;
+    }
+
+    setIsProcessing(true);
+    showNotification('This feature will be implemented with OCR integration', 'info');
+    setIsProcessing(false);
+    e.target.value = '';
+  };
+
+  // Computed values
+  const totalExpenses = expenses.reduce((sum, e) => sum + e.amount, 0);
+  const totalBudget = expenses.reduce((sum, e) => sum + e.budget, 0);
+  const budgetUsed = totalBudget > 0 ? ((totalExpenses / totalBudget) * 100).toFixed(1) : 0;
+  const highestExpense = expenses.reduce((a, b) => a.amount > b.amount ? a : b);
+  const lowestExpense = expenses.reduce((a, b) => a.amount < b.amount ? a : b);
+
+  // Chart tabs
+  const tabs = [
+    { id: "bar", label: "Bar Chart" },
+    { id: "pie", label: "Pie Chart" },
+    { id: "line", label: "Line Chart" },
+    { id: "area", label: "Area Chart" },
+    { id: "radar", label: "Radar Chart" },
+    { id: "budget", label: "Budget vs Actual" }
+  ];
+
+  // Render
+  return (
+    <div className="min-h-screen bg-black text-white">
+      <div className="max-w-6xl mx-auto px-6 py-6">
+
+        {/* Header */}
+        <div className="flex justify-between items-center mb-8 bg-gradient-to-r from-[#111] to-[#0b0b0b] border border-gray-800 rounded-xl px-6 py-4 shadow-lg">
+          <div>
+            <h1 className="text-4xl font-bold mb-2">AI Expense Tracker</h1>
+            <p className="text-gray-400">Record, upload, or type your expenses</p>
+          </div>
+          
+          <div className="flex items-center gap-3">
+            {currentUser && (
+              <div className="flex items-center gap-2 bg-gray-800 px-4 py-2 rounded-lg">
+                <User size={20} className="text-gray-400" />
+                <span className="text-sm">{currentUser.name || currentUser.email}</span>
+              </div>
+            )}
+            
+            <button
+              onClick={loadHistory}
+              className="flex items-center gap-2 bg-gray-800 px-4 py-2 rounded-lg hover:bg-gray-700 transition"
+            >
+              <History size={20} />
+              History
+            </button>
+            
+            <button
+              onClick={handleLogout}
+              className="flex items-center gap-2 bg-red-600 px-4 py-2 rounded-lg hover:bg-red-700 transition"
+            >
+              <LogOut size={20} />
+              Logout
+            </button>
+          </div>
+        </div>
+
+        {/* Notification */}
+        {notification && (
+          <div className={`fixed top-4 right-4 z-50 p-4 rounded-lg shadow-lg max-w-md animate-slide-in ${
+            notification.type === 'success' ? 'bg-green-600' : 
+            notification.type === 'info' ? 'bg-blue-600' : 
+            'bg-red-600'
+          }`}>
+            <div className="flex items-center gap-3">
+              {notification.type === 'success' && <Check size={20} />}
+              {notification.type === 'info' && <Brain size={20} />}
+              {notification.type === 'error' && <X size={20} />}
+              <p className="text-white font-medium">{notification.message}</p>
+            </div>
+          </div>
+        )}
+
+        {/* Confirmation Modal */}
+        {showConfirmation && pendingExpense && (
+          <div className="fixed inset-0 bg-black bg-opacity-70 flex items-center justify-center z-50">
+            <div className="bg-[#1a1a1a] rounded-xl p-6 max-w-md w-full border border-gray-700">
+              <h3 className="text-2xl font-bold mb-4">Confirm Expense</h3>
+              
+              <div className="space-y-3 mb-6">
+                <div className="flex justify-between">
+                  <span className="text-gray-400">Amount:</span>
+                  <span className="font-bold text-xl">{formatCurrency(pendingExpense.amount)}</span>
+                </div>
+                
+                <div className="flex justify-between">
+                  <span className="text-gray-400">Category:</span>
+                  <span className="font-bold">{pendingExpense.category}</span>
+                </div>
+                
+                <div className="flex justify-between">
+                  <span className="text-gray-400">Description:</span>
+                  <span className="text-sm">{pendingExpense.description}</span>
+                </div>
+                
+                {pendingExpense.metadata && (
+                  <div className="flex justify-between">
+                    <span className="text-gray-400">Source:</span>
+                    <span className="uppercase text-xs text-blue-400">
+                      {pendingExpense.metadata.source} ({Math.round(pendingExpense.metadata.confidence * 100)}%)
+                    </span>
+                  </div>
+                )}
+              </div>
+
+              <div className="flex gap-3">
+                <button
+                  onClick={rejectExpense}
+                  className="flex-1 bg-red-600 hover:bg-red-700 py-3 rounded-lg font-semibold flex items-center justify-center gap-2 transition"
+                >
+                  <X size={20} />
+                  Cancel
+                </button>
+                
+                <button
+                  onClick={confirmExpense}
+                  className="flex-1 bg-green-600 hover:bg-green-700 py-3 rounded-lg font-semibold flex items-center justify-center gap-2 transition"
+                >
+                  <Check size={20} />
+                  Confirm
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* History Modal */}
+        {showHistory && (
+          <div className="fixed inset-0 bg-black bg-opacity-70 flex items-center justify-center z-50 p-4">
+            <div className="bg-[#1a1a1a] rounded-xl p-6 max-w-2xl w-full max-h-[80vh] overflow-y-auto border border-gray-700">
+              <div className="flex justify-between items-center mb-6">
+                <h3 className="text-2xl font-bold">Expense History</h3>
+                <button 
+                  onClick={() => setShowHistory(false)} 
+                  className="text-gray-400 hover:text-white transition"
+                >
+                  <X size={24} />
+                </button>
+              </div>
+
+              <div className="space-y-3">
+                {expenseHistory.length === 0 ? (
+                  <p className="text-gray-400 text-center py-8">No expenses yet</p>
+                ) : (
+                  expenseHistory.map((exp, i) => (
+                    <div key={exp._id || i} className="bg-black p-4 rounded-lg border border-gray-700">
+                      <div className="flex justify-between items-start">
+                        <div>
+                          <p className="font-semibold text-lg">{exp.description || exp.title}</p>
+                          <p className="text-sm text-gray-400">{exp.category}</p>
+                        </div>
+                        <div className="text-right">
+                          <p className="font-bold text-xl">{formatCurrency(exp.amount)}</p>
+                          <p className="text-xs text-gray-400">{formatDate(exp.date)}</p>
+                        </div>
+                      </div>
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Main Content */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-7">
+          {/* Input Section */}
+          <div className="space-y-6">
+            <div className="bg-[#1a1a1a] p-6 rounded-xl border border-gray-700">
+              <h2 className="text-xl font-semibold mb-4">Add Expense</h2>
+
+              <textarea
+                className="w-full bg-black/60 border border-gray-700 rounded-xl p-4 focus:ring-2 focus:ring-purple-500 focus:border-purple-500 backdrop-blur text-sm"
+                rows={6}
+                value={inputValue}
+                onChange={(e) => setInputValue(e.target.value)}
+                onKeyPress={handleKeyPress}
+                placeholder="Type, upload, or record:
+• swiggy 300
+• uber 180
+• netflix subscription 199"
+                disabled={isProcessing || isRecording}
+              />
+
+              <div className="flex gap-4 mt-5">
+                <button
+                  onClick={isRecording ? stopRecording : startRecording}
+                  className={`p-4 rounded-lg transition-all ${
+                    isRecording
+                      ? 'bg-red-600 hover:bg-red-700 animate-pulse'
+                      : 'bg-gray-800 hover:bg-gray-700'
+                  } disabled:opacity-50`}
+                  disabled={isProcessing}
+                  title={isRecording ? "Stop recording" : "Start recording"}
+                >
+                  <Mic size={20} className={isRecording ? "text-white" : "text-gray-300"} />
+                </button>
+
+                <input
+                  type="file"
+                  ref={fileInputRef}
+                  onChange={handleFileUpload}
+                  accept=".csv,.jpg,.jpeg,.png,.pdf"
+                  className="hidden"
+                />
+
+                <button
+                  onClick={() => fileInputRef.current?.click()}
+                  className="p-4 rounded-lg bg-gray-800 hover:bg-gray-700 disabled:opacity-50 transition"
+                  disabled={isProcessing}
+                  title="Upload file"
+                >
+                  <Upload size={20} className="text-gray-300" />
+                </button>
+
+                <button
+                  onClick={handleSubmit}
+                  disabled={!inputValue.trim() || isProcessing || isRecording}
+                  className="flex-1 bg-gradient-to-r from-blue-600 to-purple-600 rounded-lg px-6 font-semibold flex items-center justify-center gap-2 disabled:opacity-50 hover:from-blue-700 hover:to-purple-700 transition"
+                >
+                  {isProcessing ? (
+                    <>
+                      <Loader2 size={20} className="animate-spin" />
+                      Processing...
+                    </>
+                  ) : (
+                    <>
+                      <Send size={20} />
+                      Add
+                    </>
+                  )}
+                </button>
+              </div>
+
+              {isRecording && (
+                <div className="mt-4 p-3 bg-red-500 bg-opacity-20 border border-red-500 rounded-lg text-center">
+                  <p className="text-red-300 text-sm font-semibold animate-pulse">
+                    🎤 Recording... Click mic to stop
+                  </p>
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Stats & Charts */}
+          <div>
+            {/* Budget Input */}
+            <div className="bg-[#1a1a1a] p-4 rounded-xl border border-gray-700 mb-6">
+              <label className="text-sm text-gray-400 mb-2 block">Set Monthly Budget</label>
+              <input
+                type="number"
+                value={totalBudgetInput || ''}
+                onChange={(e) => setTotalBudgetInput(Number(e.target.value))}
+                className="w-full bg-black border border-gray-700 p-3 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                placeholder="Enter total budget"
+              />
+            </div>
+
+            {/* Summary Cards */}
+            <div className="grid grid-cols-2 gap-4 mb-6">
+              <div className="bg-[#1a1a1a] p-4 rounded-xl">
+                <p className="text-gray-400 text-sm mb-1">Total Expenses</p>
+                <p className="text-2xl font-bold">{formatCurrency(totalExpenses)}</p>
+              </div>
+
+              <div className="bg-[#1a1a1a] p-4 rounded-xl">
+                <p className="text-gray-400 text-sm mb-1">Budget Used</p>
+                <p className={`text-2xl font-bold ${
+                  budgetUsed > 90 ? 'text-red-500' : 
+                  budgetUsed > 70 ? 'text-yellow-500' : 
+                  'text-green-500'
+                }`}>{budgetUsed}%</p>
+              </div>
+
+              <div className="bg-[#1a1a1a] rounded-xl p-4 border border-gray-700">
+                <div className="flex items-center gap-2 mb-2">
+                  <TrendingUp size={16} className="text-red-400" />
+                  <p className="text-gray-400 text-xs">Highest</p>
+                </div>
+                <p className="text-sm font-semibold">{highestExpense.category}</p>
+                <p className="text-lg font-bold">{formatCurrency(highestExpense.amount)}</p>
+              </div>
+
+              <div className="bg-[#1a1a1a] rounded-xl p-4 border border-gray-700">
+                <div className="flex items-center gap-2 mb-2">
+                  <TrendingDown size={16} className="text-green-400" />
+                  <p className="text-gray-400 text-xs">Lowest</p>
+                </div>
+                <p className="text-sm font-semibold">{lowestExpense.category}</p>
+                <p className="text-lg font-bold">{formatCurrency(lowestExpense.amount)}</p>
+              </div>
+            </div>
+
+            {/* Charts */}
+            <div className="bg-[#1a1a1a] rounded-xl p-6 border border-gray-700">
+              <div className="flex gap-4 mb-4 overflow-x-auto">
+                {tabs.map(t => (
+                  <button
+                    key={t.id}
+                    onClick={() => setActiveChart(t.id)}
+                    className={`px-4 py-2 rounded-lg whitespace-nowrap transition ${
+                      activeChart === t.id ? "bg-blue-600" : "bg-gray-800 hover:bg-gray-700"
+                    }`}
+                  >
+                    {t.label}
+                  </button>
+                ))}
+              </div>
+
+              <div className="bg-[#0a0a0a] p-8 rounded-xl border border-gray-800">
+                {activeChart === "pie" && (
+                  <ResponsiveContainer width="100%" height={400}>
+                    <PieChart>
+                      <Pie 
+                        data={expenses} 
+                        dataKey="amount" 
+                        nameKey="category" 
+                        outerRadius={140}
+                        label={(entry) => `${entry.category}: ${formatCurrency(entry.amount)}`}
+                      >
+                        {expenses.map((e, i) => (
+                          <Cell key={`cell-${i}`} fill={e.color} />
+                        ))}
+                      </Pie>
+                      <Tooltip formatter={(value) => formatCurrency(value)} />
+                      <Legend />
+                    </PieChart>
+                  </ResponsiveContainer>
+                )}
+
+                {activeChart === 'bar' && (
+                  <ResponsiveContainer width="100%" height={400}>
+                    <BarChart data={expenses}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="#333" />
+                      <XAxis dataKey="category" stroke="#888" />
+                      <YAxis stroke="#888" />
+                      <Tooltip formatter={(value) => formatCurrency(value)} />
+                      <Legend />
+                      <Bar dataKey="amount" fill="#4ECDC4" radius={[8, 8, 0, 0]} />
+                    </BarChart>
+                  </ResponsiveContainer>
+                )}
+
+                {activeChart === 'line' && (
+                  <ResponsiveContainer width="100%" height={400}>
+                    <LineChart data={expenses}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="#333" />
+                      <XAxis dataKey="category" stroke="#888" />
+                      <YAxis stroke="#888" />
+                      <Tooltip formatter={(value) => formatCurrency(value)} />
+                      <Line 
+                        type="monotone" 
+                        dataKey="amount" 
+                        stroke="#4ECDC4" 
+                        strokeWidth={3}
+                        dot={{ fill: '#4ECDC4', r: 6 }}
+                      />
+                    </LineChart>
+                  </ResponsiveContainer>
+                )}
+
+                {activeChart === 'area' && (
+                  <ResponsiveContainer width="100%" height={400}>
+                    <AreaChart data={expenses}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="#333" />
+                      <XAxis dataKey="category" stroke="#999" />
+                      <YAxis stroke="#999" />
+                      <Tooltip formatter={(value) => formatCurrency(value)} />
+                      <Area type="monotone" dataKey="amount" fill="#98D8C8" stroke="#45B7D1" />
+                    </AreaChart>
+                  </ResponsiveContainer>
+                )}
+
+                {activeChart === 'radar' && (
+                  <ResponsiveContainer width="100%" height={400}>
+                    <RadarChart data={expenses}>
+                      <PolarGrid stroke="#333" />
+                      <PolarAngleAxis dataKey="category" stroke="#888" />
+                      <PolarRadiusAxis stroke="#888" />
+                      <Tooltip formatter={(value) => formatCurrency(value)} />
+                      <Radar 
+                        dataKey="amount" 
+                        stroke="#4ECDC4" 
+                        fill="#4ECDC4" 
+                        fillOpacity={0.6} 
+                      />
+                    </RadarChart>
+                  </ResponsiveContainer>
+                )}
+
+                {activeChart === 'budget' && (
+                  <ResponsiveContainer width="100%" height={400}>
+                    <ComposedChart data={expenses}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="#333" />
+                      <XAxis dataKey="category" stroke="#888" />
+                      <YAxis stroke="#888" />
+                      <Tooltip formatter={(value) => formatCurrency(value)} />
+                      <Legend />
+                      <Bar dataKey="budget" fill="#888" name="Budget" />
+                      <Bar dataKey="amount" fill="#4ECDC4" name="Actual" />
+                      <Line 
+                        type="monotone" 
+                        dataKey="amount" 
+                        stroke="#FF6B6B" 
+                        strokeWidth={2} 
+                      />
+                    </ComposedChart>
+                  </ResponsiveContainer>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
