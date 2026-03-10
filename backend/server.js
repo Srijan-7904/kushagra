@@ -388,51 +388,6 @@ class GroqEngine {
 const llmEngine = GROQ_API_KEY ? new GroqEngine() : null;
 
 
-// Audio analysis: /api/analyze-audio (now handled by Node.js direct to Groq)
-app.post('/api/analyze-audio', authenticateToken, upload.single('audio'), async (req, res) => {
-  try {
-    if (!req.file || !req.file.buffer) {
-      return res.status(400).json({ success: false, message: 'No audio file provided' });
-    }
-
-    if (!llmEngine) {
-      return res.status(503).json({ success: false, message: 'AI Engine not configured' });
-    }
-
-    console.log(`🎙️ Audio analysis request: ${req.file.size} bytes`);
-    
-    // 1. Transcribe via Groq Whisper
-    const transcription = await llmEngine.transcribe(req.file.buffer, req.file.originalname);
-    
-    if (!transcription || transcription.trim().length === 0) {
-      return res.status(400).json({ success: false, message: 'Transcription failed' });
-    }
-
-    // 2. Categorize via Groq LLM + Global Learning
-    const result = await categorizeExpense(transcription, req.user._id);
-
-    res.json({
-      success: true,
-      transcription,
-      expense: {
-        title: transcription,
-        amount: result.amount,
-        category: result.category,
-        description: transcription
-      },
-      metadata: {
-        source: result.source,
-        confidence: result.confidence
-      }
-    });
-
-  } catch (error) {
-    console.error('Audio Analysis Error:', error);
-    res.status(500).json({ success: false, message: error.message });
-  }
-});
-
-
 
 
 
@@ -585,6 +540,50 @@ const generateToken = (userId) => {
 // ============================================
 // API ROUTES
 // ============================================
+
+// Audio analysis
+app.post('/api/analyze-audio', authenticateToken, upload.single('audio'), async (req, res) => {
+  try {
+    if (!req.file || !req.file.buffer) {
+      return res.status(400).json({ success: false, message: 'No audio file provided' });
+    }
+
+    if (!llmEngine) {
+      return res.status(503).json({ success: false, message: 'AI Engine not configured' });
+    }
+
+    console.log(`🎙️ Audio analysis request: ${req.file.size} bytes`);
+    
+    // 1. Transcribe via Groq Whisper
+    const transcription = await llmEngine.transcribe(req.file.buffer, req.file.originalname);
+    
+    if (!transcription || transcription.trim().length === 0) {
+      return res.status(400).json({ success: false, message: 'Transcription failed' });
+    }
+
+    // 2. Categorize via Groq LLM + Global Learning
+    const result = await categorizeExpense(transcription, req.user._id);
+
+    res.json({
+      success: true,
+      transcription,
+      expense: {
+        title: transcription,
+        amount: result.amount,
+        category: result.category,
+        description: transcription
+      },
+      metadata: {
+        source: result.source,
+        confidence: result.confidence
+      }
+    });
+
+  } catch (error) {
+    console.error('Audio Analysis Error:', error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
 
 // Health check
 app.get('/api/health', (req, res) => {
